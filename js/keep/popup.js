@@ -6,5 +6,6 @@ if (obj.data.popUpCode){
     let body = JSON.stringify(obj);
     $done({body})
     $notification.post("keep_popup",`popUpCode:${popUpCode}, errorCode:${errorCode}, ok:${ok}`);
+}else{
+    $done({})
 }
-$done({})
