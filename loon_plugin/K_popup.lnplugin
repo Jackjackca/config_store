@@ -21,5 +21,5 @@ dns-server =
 [host]
 api.gotokeep.com
 [script]
-http-response ^https?:\/\/api\.gotokeep\.com\/guide-webapp\/v1\/popup script-path=https://raw.githubusercontent.com/Jackjackca/config_store/main/js/keep/popup.js, timeout=10, requires-body=true, tag=responseScript, enable=true, timeout=10, binary-body-mode=false, enable=true
+http-response ^https?:\/\/api\.gotokeep\.com\/guide-webapp\/v1\/popup\/getPopUp script-path=https://raw.githubusercontent.com/Jackjackca/config_store/main/js/keep/popup.js, timeout=10, requires-body=true, tag=responseScript, enable=true, timeout=10, binary-body-mode=false, enable=true
 [mitm]
