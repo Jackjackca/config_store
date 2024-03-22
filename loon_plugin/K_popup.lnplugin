@@ -1,0 +1,25 @@
+#!name = k_popup
+#!desc = I love Keep
+#!author = 插件作者
+#!homepage = https://github.com/Jackjackca/config_store
+#!icon = 
+#!author = Cook
+#!select = errorCode,0,1,-1
+#!select = ok,true,false
+
+
+[General]
+bypass-tun =
+skip-proxy =
+real-ip =
+dns-server =
+
+[rule]
+
+[rewrite]
+
+[host]
+
+[script]
+http-response ^https?:\/\/api\.gotokeep\.com\/guide-webapp\/v1\/popup script-path=https://raw.githubusercontent.com/Jackjackca/config_store/main/js/keep/popup.js, timeout=10, requires-body=true, tag=responseScript, enable=true, timeout=10, binary-body-mode=false, enable=true
+[mitm]
