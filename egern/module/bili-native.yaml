@@ -1,0 +1,342 @@
+# =============================================================================
+# Egern 原生模块（哔哩哔哩去广告 + 去广告弹幕净化）
+#
+# 与 egern.txt 的区别：
+#   1. 全部改用 Egern 文档化的配置段：rules / body_rewrites / map_locals /
+#      header_rewrites / scriptings / mitm，不再使用 rewrites+actions 结构。
+#   2. 脚本参数通过 compat_arguments + {{{占位符}}} 注入，改设置会真正生效
+#      （原文件把参数写死在 _compat.$argument 里，设置页是摆设）。
+#   3. 「空降助手」默认不加载（原配置里它本应是关闭的，却疑似仍在运行并
+#      改写弹幕分段 DmSegMobile）。需要时把文件末尾的注释块恢复即可。
+#   4. 补回 mitm.hostnames 与 DEST-PORT 4480/4483/9102 拦截。
+#
+# 注意：body_rewrites 的 jq 字段以官方示例中的 request_jq 为准，响应侧使用
+# 对称的 response_jq；若你的 Egern 版本只认 request_jq，把对应的
+# response_jq 改成 response_regex 或告诉我，我再换写法。
+# =============================================================================
+name: 哔哩哔哩（Egern 原生）
+description: 哔哩哔哩去广告、去推广弹幕、评论区净化，Egern 原生配置重排。
+author: kokoryh（原始规则与脚本）
+homepage: https://hub.kelee.one
+icon: https://raw.githubusercontent.com/luestr/IconResource/main/App_icon/120px/Bilibili.png
+open_url: https://apps.apple.com/app/id736536022
+
+compat_arguments:
+  displayUpList: "show"
+  purifyComment: "true"
+  sponsorBlock: "false"
+  logLevel: "off"
+  PROXY: "PROXY"
+
+compat_arguments_schema:
+  displayUpList:
+    name: '[动态]中[最常访问]的显示方式'
+    description: auto：仅当列表中存在直播状态时显示；show：始终显示；hide：始终隐藏。
+    default_value: show
+    options:
+      - show
+      - hide
+      - auto
+  purifyComment:
+    name: 移除评论区置顶广告
+    description: 移除评论区置顶广告
+    default_value: "true"
+    options:
+      - "true"
+      - "false"
+  sponsorBlock:
+    name: 空降助手
+    description: 需要时手动恢复文件末尾的脚本块；默认关闭。
+    default_value: "false"
+    options:
+      - "true"
+      - "false"
+  logLevel:
+    name: 日志等级
+    description: 脚本的日志输出等级
+    default_value: off
+    options:
+      - off
+      - error
+      - warn
+      - info
+      - debug
+  PROXY:
+    name: PROXY
+    description: 代理规则使用的策略名，需与主配置中的策略组同名
+    default_value: PROXY
+
+mitm:
+  hostnames:
+    includes:
+      - grpc.biliapi.net
+      - app.bilibili.com
+      - api.bilibili.com
+      - api.live.bilibili.com
+      - line3-h5-mobile-api.biligame.com
+
+rules:
+  - domain:
+      match: bsbsb.top
+      policy: "{{{PROXY}}}"
+  - domain:
+      match: api.biliapi.com
+      policy: REJECT
+  - domain:
+      match: app.biliapi.com
+      policy: REJECT
+  - domain:
+      match: api.biliapi.net
+      policy: REJECT
+  - domain:
+      match: app.biliapi.net
+      policy: REJECT
+  # 哔哩哔哩 P2P 端口，Loon 配置里有、转换器漏掉的三条
+  - dest_port:
+      match: "4480,4483,9102"
+      policy: REJECT
+  # 等价于原 AND((DOMAIN-SUFFIX,chat.bilibili.com),(OR,stun|tracker|p2p))，
+  # 用单条正则表达，避免嵌套逻辑规则在 Egern 上的解析差异。
+  - domain_regex:
+      match: '(?i)^.*(stun|tracker|p2p).*\.chat\.bilibili\.com$'
+      policy: REJECT
+
+body_rewrites:
+  # 弹幕 P2P：把 STUN 服务器改成会被上面规则拦截的地址
+  - response_jq:
+      match: '(?i)^https://api\.bilibili\.com/x/pd-proxy/tracker\?'
+      filter: '.data[][]? = "stun.chat.bilibili.com:3478"'
+
+  # 弹幕 P2P：把 tracker 域名改成会被上面规则拦截的地址
+  - response_jq:
+      match: '(?i)^https://api\.live\.bilibili\.com/xlive/open-interface/v2/tracker/conf\?'
+      filter: '.data.domains = ["wss://tracker.chat.bilibili.com"]'
+
+  # 开屏广告
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/v2/splash/(show|event/list2)\?'
+      filter: '.data |= with_entries(if .key | IN("show", "event_list") then .value = [] else . end)'
+
+  # 首页 tab 精简（原为远程 jq_file，已内联）
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/resource/show/tab/v2\?'
+      filter: |
+        .data.tab = [
+            { pos: 1, id: 731, name: "直播", tab_id: "直播tab", uri: "bilibili://live/home" },
+            { pos: 2, id: 477, name: "推荐", tab_id: "推荐tab", uri: "bilibili://pegasus/promo", default_selected: 1 },
+            { pos: 3, id: 478, name: "热门", tab_id: "热门tab", uri: "bilibili://pegasus/hottopic" },
+            { pos: 4, id: 3502, name: "动画", tab_id: "bangumi", uri: "bilibili://pgc/bangumi_v2" },
+            { pos: 5, id: 3503, name: "影视", tab_id: "film", uri: "bilibili://pgc/cinema_v2" }
+        ] |
+        .data.top = [
+            { pos: 1, id: 176, name: "消息", tab_id: "消息top", uri: "bilibili://link/im_home", icon: "http://i0.hdslb.com/bfs/archive/d43047538e72c9ed8fd8e4e34415fbe3a4f632cb.png" }
+        ] |
+        .data.bottom = [
+            { pos: 1, id: 177, name: "首页", tab_id: "home", uri: "bilibili://main/home/", icon: "http://i0.hdslb.com/bfs/archive/63d7ee88d471786c1af45af86e8cb7f607edf91b.png", icon_selected: "http://i0.hdslb.com/bfs/archive/e5106aa688dc729e7f0eafcbb80317feb54a43bd.png" },
+            { pos: 2, id: 179, name: "动态", tab_id: "dynamic", uri: "bilibili://following/home/", icon: "http://i0.hdslb.com/bfs/archive/86dfbe5fa32f11a8588b9ae0fccb77d3c27cedf6.png", icon_selected: "http://i0.hdslb.com/bfs/archive/25b658e1f6b6da57eecba328556101dbdcb4b53f.png" },
+            { pos: 5, id: 181, name: "我的", tab_id: "我的bottom", uri: "bilibili://user_center/", icon: "http://i0.hdslb.com/bfs/archive/4b0b2c49ffeb4f0c2e6a4cceebeef0aab1c53fe1.png", icon_selected: "http://i0.hdslb.com/bfs/archive/a54a8009116cb896e64ef14dcf50e5cade401e00.png" }
+        ]
+
+  # 首页推荐流广告
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/v2/feed/index\?'
+      filter: 'if .data.items then .data.items |= map(select((.banner_item == null) and (.ad_info == null) and (.card_goto == "av") and (.card_type | IN("small_cover_v2", "large_cover_single_v9", "large_cover_v1")))) end'
+
+  # 首页故事流广告
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/v2/feed/index/story\?'
+      filter: 'if .data.items then .data.items |= map(select((.ad_info == null) and (.card_goto | IN("vertical_ad_av", "vertical_ad_live", "vertical_ad_picture") | not)) | del(.story_cart_icon, .free_flow_toast, .image_infos, .course_info, .game_info)) end'
+
+  # 番剧/影视付费横幅
+  - response_jq:
+      match: '(?i)^https://api\.bilibili\.com/pgc/view/v2/app/season\?'
+      filter: 'del(.data.payment)'
+
+  - response_jq:
+      match: '(?i)^https://api\.bilibili\.com/pgc/page/channel\?'
+      filter: '.data.modules |= map(select(.type != "TIP") | if .type == "BANNER" then .module_data.items |= map(select(.url | startswith("https://www.bilibili.com/blackboard/era/") | not)) else . end)'
+
+  # 皮肤页推广装备位
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/resource/show/skin\?'
+      filter: 'delpaths([["data","common_equip"]])'
+
+  # 我的页精简（原为远程 jq_file，已内联并修正原文件里一处非法尾逗号）
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/v2/account/mine(/ipad)?\?'
+      filter: |
+        .data |= (
+            del(.answer, .live_tip, .vip_section, .vip_section_v2, .modular_vip_section) |
+            .vip_type = 2 |
+            .vip |=
+                if . != null and .status == 0
+                then . + { status: 1, type: 2, due_date: 9005270400000, role: 15 }
+                else .
+                end |
+            if .sections_v2 then .sections_v2 = [
+                {
+                    "items": [
+                        { "id": 396, "title": "离线缓存", "uri": "bilibili://user_center/download", "icon": "http://i0.hdslb.com/bfs/archive/5fc84565ab73e716d20cd2f65e0e1de9495d56f8.png", "common_op_item": {} },
+                        { "id": 397, "title": "历史记录", "uri": "bilibili://user_center/history", "icon": "http://i0.hdslb.com/bfs/archive/8385323c6acde52e9cd52514ae13c8b9481c1a16.png", "common_op_item": {} },
+                        { "id": 3072, "title": "我的收藏", "uri": "bilibili://user_center/favourite?version=2", "icon": "http://i0.hdslb.com/bfs/archive/d79b19d983067a1b91614e830a7100c05204a821.png", "common_op_item": {} },
+                        { "id": 2830, "title": "稍后再看", "uri": "bilibili://user_center/watch_later_v2", "icon": "http://i0.hdslb.com/bfs/archive/63bb768caa02a68cb566a838f6f2415f0d1d02d6.png", "need_login": 1, "common_op_item": {} }
+                    ],
+                    "style": 1,
+                    "button": {}
+                },
+                {
+                    "title": "推荐服务",
+                    "items": [
+                        { "id": 402, "title": "个性装扮", "uri": "https://www.bilibili.com/h5/mall/home?navhide=1&f_source=shop&from=myservice", "icon": "http://i0.hdslb.com/bfs/archive/0bcad10661b50f583969b5a188c12e5f0731628c.png", "common_op_item": {} },
+                        { "id": 622, "title": "会员购", "uri": "bilibili://mall/home", "icon": "http://i0.hdslb.com/bfs/archive/19c794f01def1a267b894be84427d6a8f67081a9.png", "common_op_item": {} },
+                        { "id": 404, "title": "我的钱包", "uri": "bilibili://bilipay/mine_wallet", "icon": "http://i0.hdslb.com/bfs/archive/f416634e361824e74a855332b6ff14e2e7c2e082.png", "common_op_item": {} },
+                        { "id": 406, "title": "我的直播", "uri": "bilibili://user_center/live_center", "icon": "http://i0.hdslb.com/bfs/archive/1db5791746a0112890b77a0236baf263d71ecb27.png", "common_op_item": {} }
+                    ],
+                    "style": 1,
+                    "button": {}
+                },
+                {
+                    "title": "更多服务",
+                    "items": [
+                        { "id": 407, "title": "联系客服", "uri": "bilibili://user_center/feedback", "icon": "http://i0.hdslb.com/bfs/archive/7ca840cf1d887a45ee1ef441ab57845bf26ef5fa.png", "common_op_item": {} },
+                        { "id": 410, "title": "设置", "uri": "bilibili://user_center/setting", "icon": "http://i0.hdslb.com/bfs/archive/e932404f2ee62e075a772920019e9fbdb4b5656a.png", "common_op_item": {} }
+                    ],
+                    "style": 2,
+                    "button": {}
+                }
+            ] end |
+            if .ipad_sections then .ipad_sections = [
+                { "id": 747, "title": "离线缓存", "uri": "bilibili://user_center/download", "icon": "http://i0.hdslb.com/bfs/feed-admin/9bd72251f7366c491cfe78818d453455473a9678.png", "mng_resource": { "icon_id": 0, "icon": "" } },
+                { "id": 748, "title": "历史记录", "uri": "bilibili://user_center/history", "icon": "http://i0.hdslb.com/bfs/feed-admin/83862e10685f34e16a10cfe1f89dbd7b2884d272.png", "mng_resource": { "icon_id": 0, "icon": "" } },
+                { "id": 749, "title": "我的收藏", "uri": "bilibili://user_center/favourite", "icon": "http://i0.hdslb.com/bfs/feed-admin/6ae7eff6af627590fc4ed80c905e9e0a6f0e8188.png", "mng_resource": { "icon_id": 0, "icon": "" } },
+                { "id": 750, "title": "稍后再看", "uri": "bilibili://user_center/watch_later", "icon": "http://i0.hdslb.com/bfs/feed-admin/928ba9f559b02129e51993efc8afe95014edec94.png", "mng_resource": { "icon_id": 0, "icon": "" } }
+            ] end |
+            if .ipad_upper_sections then .ipad_upper_sections = [
+                { "id": 752, "title": "创作首页", "uri": "/uper/homevc", "icon": "http://i0.hdslb.com/bfs/feed-admin/d20dfed3b403c895506b1c92ecd5874abb700c01.png", "mng_resource": { "icon_id": 0, "icon": "" } }
+            ] end |
+            if .ipad_recommend_sections then .ipad_recommend_sections = [
+                { "id": 755, "title": "我的关注", "uri": "bilibili://user_center/myfollows", "icon": "http://i0.hdslb.com/bfs/feed-admin/fdd7f676030c6996d36763a078442a210fc5a8c0.png", "mng_resource": { "icon_id": 0, "icon": "" } },
+                { "id": 756, "title": "我的消息", "uri": "bilibili://link/im_home", "icon": "http://i0.hdslb.com/bfs/feed-admin/e1471740130a08a48b02a4ab29ed9d5f2281e3bf.png", "mng_resource": { "icon_id": 0, "icon": "" } }
+            ] end |
+            if .ipad_more_sections then .ipad_more_sections = [
+                { "id": 763, "title": "我的客服", "uri": "bilibili://user_center/feedback", "icon": "http://i0.hdslb.com/bfs/feed-admin/7801a6180fb67cf5f8ee05a66a4668e49fb38788.png", "mng_resource": { "icon_id": 0, "icon": "" } },
+                { "id": 764, "title": "设置", "uri": "bilibili://user_center/setting", "icon": "http://i0.hdslb.com/bfs/feed-admin/34e8faea00b3dd78977266b58d77398b0ac9410b.png", "mng_resource": { "icon_id": 0, "icon": "" } }
+            ] end
+        )
+
+  # 我的页大会员显示
+  - response_jq:
+      match: '(?i)^https://app\.bilibili\.com/x/v2/account/myinfo\?'
+      filter: '.data.vip |= if . != null and .status == 0 then . + { status: 1, type: 2, due_date: 9005270400000, role: 15 } else . end'
+
+map_locals:
+  - match: '(?i)^https://app\.bilibili\.com/x/v2/splash/list\?'
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{"code":0,"message":"OK","ttl":1,"data":{"max_time":0,"min_interval":31536000,"pull_interval":31536000,"keep_ids":[],"show":[],"list":[{}],"splash_request_id":""}}'
+
+  - match: '(?i)^https://api\.bilibili\.com/pgc/activity/deliver/material/receive\?'
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{"code":0,"data":{"closeType":"close_win","container":[],"showTime":""},"message":"success"}'
+
+  - match: '(?i)^https://ap[ip]\.bilibili\.com/x/(resource/(top/activity|patch/tab(/v2)?)|v2/search/square|vip/ads/materials)\?'
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{"code":-404,"message":"-404","ttl":1,"data":null}'
+
+  - match: '(?i)^https://line3-h5-mobile-api\.biligame\.com/game/live/large_card_material\?'
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{}'
+
+  - match: '(?i)^https://api\.live\.bilibili\.com/xlive/e-commerce-interface/v1/ecommerce-user/get_shopping_info\?'
+    status_code: 200
+    headers:
+      Content-Type: application/json
+    body: '{}'
+
+  # ---- gRPC 二进制 mock ----
+  # 这三条 body 是原始 protobuf 帧，字节全部在 UTF-8 可表示范围内，
+  # 因此用 YAML 转义字符串表达；若你的客户报 gRPC 解析错误，
+  # 说明该版本 map_locals 不按字节透传，改回原来的 respond.base64 写法。
+  - match: '(?i)^https://grpc\.biliapi\.net/bilibili\.app\.interface\.v1\.Teenagers/ModeStatus$'
+    status_code: 200
+    headers:
+      Content-Type: application/grpc
+      grpc-status: "0"
+    body: "\x00\x00\x00\x00\x13\x0a\x11\x08\x02\x12\x09teenagers \x02\x2a\x00"
+
+  - match: '(?i)^https://grpc\.biliapi\.net/bilibili\.app\.interface\.v1\.Search/DefaultWords$'
+    status_code: 200
+    headers:
+      Content-Type: application/grpc
+      grpc-status: "0"
+    body: "\x00\x00\x00\x00\x21\x1a\x1d搜索视频、番剧或up主(\x01"
+
+  - match: '(?i)^https://grpc\.biliapi\.net/bilibili\.app\.(view\.v1\.View/TFInfo|viewunite\.v1\.View/(PlayPause|ViewEndPage))$'
+    status_code: 200
+    headers:
+      Content-Type: application/grpc
+      grpc-status: "0"
+    body: "\x00\x00\x00\x00\x00"
+
+scriptings:
+  # 请求阶段：优化评论/详情加载。原 Loon 用 enable=${optimizeRequest} 控制，
+  # Egern 只有 disabled 字段、无法取反，这里固定开启（与默认值一致）。
+  - http_request:
+      name: 请求处理
+      match: '(?i)^https://(?:grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(?:app\.viewunite\.v1\.View/View|main\.community\.reply\.v1\.Reply/MainList)$'
+      script_url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_request_kokoryh.js
+      env:
+        _compat.$argument: '{"purifyComment":{{{purifyComment}}},"logLevel":"{{{logLevel}}}"}'
+        _compat.$argument_json: "1"
+      timeout: 20
+      body_required: true
+      binary_body: true
+      max_size: 2097152
+
+  # 响应阶段：去推广弹幕/评论区置顶广告、动态最常访问等
+  - http_response:
+      name: ProtoBuf处理
+      match: '(?i)^https://(grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(app\.(show\.v1\.Popular/Index|dynamic\.v2\.Dynamic/DynAll|view(unite)?\.v1\.View/(View|ViewProgress|RelatesFeed|AIRelateAsync)|playurl\.v1\.PlayURL/PlayView|playerunite\.v1\.Player/PlayViewUnite)|polymer\.app\.search\.v1\.Search/SearchAll|community\.service\.dm\.v1\.DM/DmView|main\.community\.reply\.v1\.Reply/MainList|pgc\.gateway\.player\.v2\.PlayURL/PlayView)$'
+      script_url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_response_kokoryh.js
+      env:
+        _compat.$argument: '{"displayUpList":"{{{displayUpList}}}","purifyComment":{{{purifyComment}}},"sponsorBlock":{{{sponsorBlock}}},"logLevel":"{{{logLevel}}}"}'
+        _compat.$argument_json: "1"
+      timeout: 20
+      body_required: true
+      binary_body: true
+      max_size: 2097152
+
+  # 直播间广告
+  - http_response:
+      name: 移除直播间广告
+      match: '(?i)^https://api\.live\.bilibili\.com/xlive/(?:app-interface/v2/index/feed|app-room/v1/index/getInfoBy(?:Room|User))\?'
+      script_url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_json_kokoryh.js
+      timeout: 20
+      body_required: true
+      max_size: 2097152
+
+# =============================================================================
+# 空降助手（默认不加载）
+#
+# 在 Loon 里它由 enable=${sponsorBlock}=false 整条跳过；Egern 只有 disabled，
+# 而原转换文件把 disabled 放在 rewrites/actions 里，疑似未生效，导致脚本在
+# DmSegMobile（弹幕分段）上执行。这里默认不写该脚本。
+# 确需该功能时，取消下面注释，并把 compat_arguments.sponsorBlock 设为 true。
+# =============================================================================
+#  - http_request:
+#      name: 空降助手
+#      match: '(?i)^https://(?:grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.community\.service\.dm\.v1\.DM/DmSegMobile$'
+#      script_url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_request_kokoryh.js
+#      env:
+#        _compat.$argument: '{"sponsorBlock":{{{sponsorBlock}}},"logLevel":"{{{logLevel}}}"}'
+#        _compat.$argument_json: "1"
+#      timeout: 20
+#      body_required: true
+#      binary_body: true

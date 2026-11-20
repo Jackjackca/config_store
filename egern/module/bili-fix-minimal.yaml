@@ -1,0 +1,283 @@
+# =============================================================================
+# 最小改动补丁：在现有 egern.txt 基础上只改与「弹幕」直接相关的 4 处
+#
+# 与 egern.txt 的差异（全部标了 [FIX-x]）：
+#   [FIX-1] 删除「空降助手」条目（原第 197-209 行）—— 最高嫌疑：
+#           Egern 文档只在 scriptings 段落定义 disabled，这份文件用的
+#           rewrites/actions 结构里 disabled 可能不生效，导致本该由
+#           enable=${sponsorBlock}=false 关闭的脚本在 DmSegMobile 上运行，
+#           而它的参数里没有 sponsorBlock，脚本内置默认 sponsorBlock=true。
+#   [FIX-2] AND/OR 复合规则改成等价的 domain_regex（原第 73-85 行）。
+#           若想单变量验证，把这里换回下面注释里的 and 规则即可。
+#   [FIX-3] 补回 Loon 的 DEST-PORT 4480/4483/9102 拦截（原配置里被转换器丢了）。
+#   [FIX-4] 补上 mitm.hostnames（原配置里完全没有 mitm 段）。
+#
+# 建议验证顺序：
+#   1) 先只装本文件，播放视频看弹幕是否恢复；
+#   2) 若恢复，把 [FIX-2] 换回注掉的 and 规则再测，用于确认「嵌套逻辑规则」
+#      是否也是问题（两项都命中说明是叠加原因）；
+#   3) 若仍无弹幕，把 ProtoBuf处理 的 match 中 DM/DmView 与 ViewProgress
+#      两段去掉再测（验证二进制 body/trailers 假设）。
+# 排查期可把下方两处 logLevel 的 "info" 改成 "debug"。
+# =============================================================================
+compat_arguments:
+  displayUpList: show
+  purifyComment: 'true'
+  optimizeRequest: 'true'
+  sponsorBlock: 'false'
+  logLevel: off
+  PROXY: PROXY
+compat_arguments_schema:
+  displayUpList:
+    name: '[动态]中[最常访问]的显示方式'
+    description: auto：仅当列表中存在直播状态时显示；show：始终显示；hide：始终隐藏。
+    default_value: show
+    options:
+    - show
+    - hide
+    - auto
+  purifyComment:
+    name: 移除评论区置顶广告
+    description: 移除评论区置顶广告
+    default_value: 'true'
+    options:
+    - 'true'
+    - 'false'
+  optimizeRequest:
+    name: 优化评论区加载异常
+    description: 尝试解决评论区加载异常的问题
+    default_value: 'true'
+    options:
+    - 'true'
+    - 'false'
+  sponsorBlock:
+    name: 空降助手
+    description: 用于跳过视频中的广告（本补丁已移除该脚本，见 [FIX-1]）
+    default_value: 'false'
+    options:
+    - 'true'
+    - 'false'
+  logLevel:
+    name: 日志等级
+    description: 脚本的日志输出等级
+    default_value: off
+    options:
+    - off
+    - error
+    - warn
+    - info
+    - debug
+  PROXY:
+    name: PROXY
+    description: 代理规则使用的策略
+    default_value: PROXY
+open_url: https://apps.apple.com/app/id736536022
+author: kokoryh[https://github.com/kokoryh]
+homepage: https://hub.kelee.one
+icon: https://raw.githubusercontent.com/luestr/IconResource/main/App_icon/120px/Bilibili.png
+dns: {}
+# [FIX-4] 原配置完全没有 mitm 段，gRPC 明文改写/脚本全靠它。
+mitm:
+  hostnames:
+    includes:
+    - grpc.biliapi.net
+    - app.bilibili.com
+    - api.bilibili.com
+    - api.live.bilibili.com
+    - line3-h5-mobile-api.biligame.com
+rules:
+- domain:
+    match: bsbsb.top
+    policy: PROXY
+- domain:
+    match: api.biliapi.com
+    policy: REJECT
+- domain:
+    match: app.biliapi.com
+    policy: REJECT
+- domain:
+    match: api.biliapi.net
+    policy: REJECT
+- domain:
+    match: app.biliapi.net
+    policy: REJECT
+# [FIX-3] Loon 里有、转换后丢失的 P2P 端口拦截。
+# 这些端口不拦，哔哩哔哩 P2P 会正常发起，弹幕/视频可能被拖住。
+- dest_port:
+    match: 4480,4483,9102
+    policy: REJECT
+# [FIX-2] 原规则（如需单变量验证，注释掉下面的 domain_regex 并恢复本段）：
+# - and:
+#     match:
+#     - domain_suffix:
+#         match: chat.bilibili.com
+#     - or:
+#         match:
+#         - domain_keyword:
+#             match: stun
+#         - domain_keyword:
+#             match: tracker
+#         - domain_keyword:
+#             match: p2p
+#     policy: REJECT
+# [FIX-2] 与上面 AND(...) 等价的单条正则，避开 Egern 对嵌套 and/or 的解析差异。
+- domain_regex:
+    match: '(?i)^.*(stun|tracker|p2p).*\.chat\.bilibili\.com$'
+    policy: REJECT
+rewrites:
+- match: (?i)^https://api\.bilibili\.com/x/pd-proxy/tracker\?
+  actions:
+  - response_body:
+      jq: .data[][]?="stun.chat.bilibili.com:3478"
+- match: (?i)^https://app\.bilibili\.com/x/v2/splash/(show|event/list2)\?
+  actions:
+  - response_body:
+      jq: .data |= with_entries(if .key | IN("show", "event_list") then .value = [] else . end)
+- match: (?i)^https://app\.bilibili\.com/x/v2/splash/list\?
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body: '{"code":0,"message":"OK","ttl":1,"data":{"max_time":0,"min_interval":31536000,"pull_interval":31536000,"keep_ids":[],"show":[],"list":[{}],"splash_request_id":""}}'
+- match: (?i)^https://app\.bilibili\.com/x/resource/show/tab/v2\?
+  actions:
+  - response_body:
+      jq:
+        url: https://kelee.one/Resource/JQLang/Bilibili/tab_Bilibili_remove_ads.jq
+- match: (?i)^https://app\.bilibili\.com/x/v2/feed/index\?
+  actions:
+  - response_body:
+      jq: if .data.items then .data.items |= map(select((.banner_item == null) and (.ad_info == null) and (.card_goto == "av") and (.card_type | IN("small_cover_v2", "large_cover_single_v9", "large_cover_v1")))) end
+- match: (?i)^https://api\.bilibili\.com/pgc/activity/deliver/material/receive\?
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body: '{"code":0,"data":{"closeType":"close_win","container":[],"showTime":""},"message":"success"}'
+- match: (?i)^https://api\.bilibili\.com/pgc/view/v2/app/season\?
+  actions:
+  - response_body:
+      jq: del(.data.payment)
+- match: (?i)^https://api\.bilibili\.com/pgc/page/channel\?
+  actions:
+  - response_body:
+      jq: .data.modules |= map(select(.type != "TIP") | if .type == "BANNER" then .module_data.items |= map(select(.url | startswith("https://www.bilibili.com/blackboard/era/") | not)) else . end)
+- match: (?i)^https://app\.bilibili\.com/x/v2/feed/index/story\?
+  actions:
+  - response_body:
+      jq: if .data.items then .data.items |= map(select((.ad_info == null) and (.card_goto | IN("vertical_ad_av", "vertical_ad_live", "vertical_ad_picture") | not)) | del(.story_cart_icon, .free_flow_toast, .image_infos, .course_info, .game_info)) end
+- match: (?i)^https://ap[ip]\.bilibili\.com/x/(resource/(top/activity|patch/tab(/v2)?)|v2/search/square|vip/ads/materials)\?
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body: '{"code":-404,"message":"-404","ttl":1,"data":null}'
+- match: (?i)^https://line3-h5-mobile-api\.biligame\.com/game/live/large_card_material\?
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body: '{}'
+- match: (?i)^https://api\.live\.bilibili\.com/xlive/e-commerce-interface/v1/ecommerce-user/get_shopping_info\?
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: application/json
+      body: '{}'
+- match: (?i)^https://api\.live\.bilibili\.com/xlive/open-interface/v2/tracker/conf\?
+  actions:
+  - response_body:
+      jq: .data.domains=["wss://tracker.chat.bilibili.com"]
+- match: (?i)^https://app\.bilibili\.com/x/resource/show/skin\?
+  actions:
+  - response_body:
+      jq: delpaths([["data","common_equip"]])
+- match: (?i)^https://app\.bilibili\.com/x/v2/account/mine(/ipad)?\?
+  actions:
+  - response_body:
+      jq:
+        url: https://kelee.one/Resource/JQLang/Bilibili/mine_Bilibili_remove_ads.jq
+- match: (?i)^https://app\.bilibili\.com/x/v2/account/myinfo\?
+  actions:
+  - response_body:
+      jq: '.data.vip |= if . != null and .status == 0 then . + { status: 1, type: 2, due_date: 9005270400000, role: 15 } else . end'
+- match: (?i)^https://grpc\.biliapi\.net/bilibili\.app\.interface\.v1\.Teenagers/ModeStatus$
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body:
+        base64: AAAAABMKEQgCEgl0ZWVuYWdlcnMgAioA
+- match: (?i)^https://grpc\.biliapi\.net/bilibili\.app\.interface\.v1\.Search/DefaultWords$
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body:
+        base64: AAAAACEaHeaQnOe0ouinhumikeOAgeeVquWJp+aIlnVw5Li7KAE=
+- match: (?i)^https://grpc\.biliapi\.net/bilibili\.app\.(view\.v1\.View/TFInfo|viewunite\.v1\.View/(PlayPause|ViewEndPage))$
+  actions:
+  - respond:
+      status: 200
+      headers:
+        Content-Type: text/plain
+      body:
+        base64: AAAAAAA=
+- match: (?i)^https://grpc\.biliapi\.net/bilibili\.app\.(interface\.v1\.(Teenagers/ModeStatus|Search/DefaultWords)|view\.v1\.View/TFInfo|viewunite\.v1\.View/(PlayPause|ViewEndPage))$
+  actions:
+  - response_headers:
+      append:
+        grpc-status: '0'
+# [FIX-1] 原「空降助手」条目已删除。若确认它不是元凶、又想要该功能，
+# 恢复下面这段时务必把 disabled 改为 false，并补上 sponsorBlock 参数：
+# - name: 空降助手
+#   match: (?i)^https://(?:grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.community\.service\.dm\.v1\.DM/DmSegMobile$
+#   actions:
+#   - request_script:
+#       name: 空降助手
+#       url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_request_kokoryh.js
+#       env:
+#         _compat.$argument: '{"sponsorBlock":true,"logLevel":"info"}'
+#         _compat.$argument_json: '1'
+#       timeout: 10
+#       body_required: true
+#       binary_body: true
+- name: 请求处理
+  match: (?i)^https://(?:grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(?:app\.viewunite\.v1\.View/View|main\.community\.reply\.v1\.Reply/MainList)$
+  actions:
+  - request_script:
+      name: 请求处理
+      url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_request_kokoryh.js
+      env:
+        _compat.$argument: '{"purifyComment":true,"logLevel":"info"}'
+        _compat.$argument_json: '1'
+      timeout: 10
+      body_required: true
+      binary_body: true
+- name: ProtoBuf处理
+  match: (?i)^https://(grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(app\.(show\.v1\.Popular/Index|dynamic\.v2\.Dynamic/DynAll|view(unite)?\.v1\.View/(View|ViewProgress|RelatesFeed|AIRelateAsync)|playurl\.v1\.PlayURL/PlayView|playerunite\.v1\.Player/PlayViewUnite)|polymer\.app\.search\.v1\.Search/SearchAll|community\.service\.dm\.v1\.DM/DmView|main\.community\.reply\.v1\.Reply/MainList|pgc\.gateway\.player\.v2\.PlayURL/PlayView)$
+  actions:
+  - response_script:
+      name: ProtoBuf处理
+      url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_response_kokoryh.js
+      env:
+        _compat.$argument: '{"displayUpList":"show","purifyComment":true,"sponsorBlock":false,"logLevel":"info"}'
+        _compat.$argument_json: '1'
+      timeout: 20
+      body_required: true
+      binary_body: true
+- name: 移除直播间广告
+  match: (?i)^https://api\.live\.bilibili\.com/xlive/(?:app-interface/v2/index/feed|app-room/v1/index/getInfoBy(?:Room|User))\?
+  actions:
+  - response_script:
+      name: 移除直播间广告
+      url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_json_kokoryh.js
+      timeout: 20
+      body_required: true
