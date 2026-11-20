@@ -9,6 +9,10 @@
 #   3. 「空降助手」默认不加载（原配置里它本应是关闭的，却疑似仍在运行并
 #      改写弹幕分段 DmSegMobile）。需要时把文件末尾的注释块恢复即可。
 #   4. 补回 mitm.hostnames 与 DEST-PORT 4480/4483/9102 拦截。
+#   5. [弹幕修复] 响应脚本不再匹配 ViewProgress。
+#      实测 A（保留 ViewProgress）无弹幕、B（摘掉 ViewProgress）有弹幕，
+#      脚本源码为 n.dm = void 0（ViewProgressReply 的弹幕配置字段），
+#      即弹幕消失的直接原因。DmView 仍保留（仅清 qoe/活动弹幕，无副作用）。
 #
 # 注意：body_rewrites 的 jq 字段以官方示例中的 request_jq 为准，响应侧使用
 # 对称的 response_jq；若你的 Egern 版本只认 request_jq，把对应的
@@ -303,7 +307,11 @@ scriptings:
   # 响应阶段：去推广弹幕/评论区置顶广告、动态最常访问等
   - http_response:
       name: ProtoBuf处理
-      match: '(?i)^https://(grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(app\.(show\.v1\.Popular/Index|dynamic\.v2\.Dynamic/DynAll|view(unite)?\.v1\.View/(View|ViewProgress|RelatesFeed|AIRelateAsync)|playurl\.v1\.PlayURL/PlayView|playerunite\.v1\.Player/PlayViewUnite)|polymer\.app\.search\.v1\.Search/SearchAll|community\.service\.dm\.v1\.DM/DmView|main\.community\.reply\.v1\.Reply/MainList|pgc\.gateway\.player\.v2\.PlayURL/PlayView)$'
+      # 注意：这里刻意不匹配 view(unite)?.v1.View/ViewProgress。
+      # 该脚本的 ViewProgress 分支会无条件执行 n.dm = void 0，把弹幕配置字段
+      # 整个删掉，新版播放器拿不到弹幕配置就不再显示弹幕（这就是本次"弹幕被
+      # 误杀"的根因）。DmView 分支只清 qoe/activityMeta/commandDms，不影响弹幕。
+      match: '(?i)^https://(grpc\.biliapi\.net|app\.bilibili\.com)/bilibili\.(app\.(show\.v1\.Popular/Index|dynamic\.v2\.Dynamic/DynAll|view(unite)?\.v1\.View/(View|RelatesFeed|AIRelateAsync)|playurl\.v1\.PlayURL/PlayView|playerunite\.v1\.Player/PlayViewUnite)|polymer\.app\.search\.v1\.Search/SearchAll|community\.service\.dm\.v1\.DM/DmView|main\.community\.reply\.v1\.Reply/MainList|pgc\.gateway\.player\.v2\.PlayURL/PlayView)$'
       script_url: https://kelee.one/Resource/JavaScript/Bilibili/Bilibili_proto_response_kokoryh.js
       env:
         _compat.$argument: '{"displayUpList":"{{{displayUpList}}}","purifyComment":{{{purifyComment}}},"sponsorBlock":{{{sponsorBlock}}},"logLevel":"{{{logLevel}}}"}'
